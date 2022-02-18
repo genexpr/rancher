@@ -3,16 +3,12 @@ package resourcequota
 import (
 	"encoding/json"
 	"fmt"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"reflect"
 	"time"
 
-	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
-
-	"k8s.io/apimachinery/pkg/runtime"
-
 	"github.com/mitchellh/mapstructure"
 	"github.com/rancher/norman/types/convert"
+	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	v1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	namespaceutil "github.com/rancher/rancher/pkg/namespace"
@@ -20,9 +16,11 @@ import (
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	q "k8s.io/apiserver/pkg/quota/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	quota "k8s.io/apiserver/pkg/quota/v1"
 	clientcache "k8s.io/client-go/tools/cache"
 )
 
@@ -385,12 +383,14 @@ func (c *SyncController) setValidated(ns *corev1.Namespace, value bool, msg stri
 	return c.Namespaces.Update(toUpdate)
 }
 
-func (c *SyncController) calculateRemainder(ns *v1.Namespace, namespaceDefault *v32.ResourceQuotaLimit) (string, error) {
+// calculateRemainingQuota tries to create a string representing a quota that a new namespace will require
+// based on available resources in its project.
+func (c *SyncController) calculateRemainingQuota(ns *v1.Namespace, request *v32.ResourceQuotaLimit) (string, error) {
 	totalProject, projectID, err := getProjectResourceQuotaLimit(ns, c.ProjectLister)
 	if err != nil {
 		return "", err
 	}
-	used, err := c.getUsedLimits(ns, projectID)
+	totalUsed, err := c.getUsedLimits(ns, projectID)
 	if err != nil {
 		return "", nil
 	}
@@ -399,23 +399,33 @@ func (c *SyncController) calculateRemainder(ns *v1.Namespace, namespaceDefault *
 	if err != nil {
 		return "", nil
 	}
-	defaultList, err := convertProjectResourceLimitToResourceList(namespaceDefault)
+
+	available := totalProjectList.DeepCopy()
+	for _, u := range totalUsed {
+		nsUsed, err := convertProjectResourceLimitToResourceList(u)
+		if err != nil {
+			return "", err
+		}
+		available = quota.SubtractWithNonNegativeResult(available, nsUsed)
+	}
+
+	requestList, err := convertProjectResourceLimitToResourceList(request)
 	if err != nil {
 		return "", nil
 	}
-
-	var available = totalProjectList.DeepCopy()
-	for _, u := range used {
-		list, _ := convertProjectResourceLimitToResourceList(u)
-		available = q.SubtractWithNonNegativeResult(available, list)
-	}
-	res := q.SubtractWithNonNegativeResult(available, defaultList)
+	rem := quota.SubtractWithNonNegativeResult(available, requestList)
 
 	const format = resource.Format("DecimalSI")
-	cpuLimit := fmt.Sprintf(`"limitsCpu":"%dm"`, res.Name("limits.cpu", format).MilliValue())
-	memoryLimit := fmt.Sprintf(`"limitsMemory":"%dMi"`, res.Name("limits.memory", format).MilliValue())
+	cpu := fmt.Sprintf(`"limitsCpu":"%dm"`, rem.Name("limits.cpu", format).MilliValue())
+	memory := fmt.Sprintf(`"limitsMemory":"%dMi"`, rem.Name("limits.memory", format).MilliValue())
+	replicationControllers := fmt.Sprintf(`"replicationControllers":"%d"`, rem.Name("replicationcontrollers", format).MilliValue())
+	configMaps := fmt.Sprintf(`"configMaps":"%d"`, rem.Name("configmaps", format).MilliValue())
+	persistentVolumes := fmt.Sprintf(`"persistentVolumeClaims":"%d"`, rem.Name("persistentvolumeclaims", format).MilliValue())
+	servicesNodePorts := fmt.Sprintf(`"servicesNodePorts":"%d"`, rem.Name("services.nodeports", format).MilliValue())
+	servicesLoadBalancers := fmt.Sprintf(`"servicesLoadBalancers":"%d"`, rem.Name("services.loadbalancers", format).MilliValue())
 
-	return fmt.Sprintf(`{"limit": {%s,%s}}`, cpuLimit, memoryLimit), nil
+	return fmt.Sprintf(`{"limit": {%s,%s,%s,%s,%s,%s,%s}}`,
+		cpu, memory, persistentVolumes, replicationControllers, configMaps, servicesNodePorts, servicesLoadBalancers), nil
 }
 
 func (c *SyncController) getResourceQuotaToUpdate(ns *corev1.Namespace) (string, error) {
@@ -425,8 +435,9 @@ func (c *SyncController) getResourceQuotaToUpdate(ns *corev1.Namespace) (string,
 		return "", err
 	}
 
+	// For namespaces without the resource quota annotation.
 	if quota == "" && defaultQuota != nil {
-		return c.calculateRemainder(ns, &defaultQuota.Limit)
+		return c.calculateRemainingQuota(ns, &defaultQuota.Limit)
 	}
 
 	// rework after api framework change is done
