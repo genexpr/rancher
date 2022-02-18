@@ -3,6 +3,7 @@ package resourcequota
 import (
 	"encoding/json"
 	"fmt"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"reflect"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	q "k8s.io/apiserver/pkg/quota/v1"
 	clientcache "k8s.io/client-go/tools/cache"
 )
 
@@ -119,17 +121,9 @@ func (c *SyncController) CreateResourceQuota(ns *corev1.Namespace) (runtime.Obje
 		return ns, err
 	}
 
-	projectLimit, _, err := getProjectResourceQuotaLimit(ns, c.ProjectLister)
+	quotaSpec, err := c.getNamespaceResourceQuota(ns)
 	if err != nil {
 		return ns, err
-	}
-
-	var quotaSpec *corev1.ResourceQuotaSpec
-	if projectLimit != nil {
-		quotaSpec, err = c.getNamespaceResourceQuota(ns)
-		if err != nil {
-			return ns, err
-		}
 	}
 
 	quotaToUpdate, err := c.getResourceQuotaToUpdate(ns)
@@ -249,9 +243,6 @@ func (c *SyncController) getNamespaceResourceQuota(ns *corev1.Namespace) (*corev
 	if err != nil {
 		return nil, err
 	}
-	if limit == nil {
-		limit = defaultResourceLimit
-	}
 
 	return convertResourceLimitResourceQuotaSpec(limit)
 }
@@ -336,23 +327,11 @@ func (c *SyncController) validateAndSetNamespaceQuota(ns *corev1.Namespace, quot
 	mu.Lock()
 	defer mu.Unlock()
 	// get other Namespaces
-	objects, err := c.NsIndexer.ByIndex(nsByProjectIndex, projectID)
+	nsLimits, err := c.getUsedLimits(ns, projectID)
 	if err != nil {
-		return false, updatedNs, err
+		return false, nil, err
 	}
-	var nsLimits []*v32.ResourceQuotaLimit
-	for _, o := range objects {
-		other := o.(*corev1.Namespace)
-		// skip itself
-		if other.Name == ns.Name {
-			continue
-		}
-		nsLimit, err := getNamespaceResourceQuotaLimit(other)
-		if err != nil {
-			return false, updatedNs, err
-		}
-		nsLimits = append(nsLimits, nsLimit)
-	}
+
 	nsLimit, err := getNamespaceResourceQuotaLimit(updatedNs)
 	if err != nil {
 		return false, updatedNs, err
@@ -372,6 +351,27 @@ func (c *SyncController) validateAndSetNamespaceQuota(ns *corev1.Namespace, quot
 
 }
 
+func (c *SyncController) getUsedLimits(ns *v1.Namespace, projectID string) ([]*v32.ResourceQuotaLimit, error) {
+	objects, err := c.NsIndexer.ByIndex(nsByProjectIndex, projectID)
+	if err != nil {
+		return nil, err
+	}
+	var nsLimits []*v32.ResourceQuotaLimit
+	for _, o := range objects {
+		other := o.(*corev1.Namespace)
+		// Skip itself.
+		if other.Name == ns.Name {
+			continue
+		}
+		nsLimit, err := getNamespaceResourceQuotaLimit(other)
+		if err != nil {
+			return nil, err
+		}
+		nsLimits = append(nsLimits, nsLimit)
+	}
+	return nsLimits, nil
+}
+
 func (c *SyncController) setValidated(ns *corev1.Namespace, value bool, msg string) (*corev1.Namespace, error) {
 	set, err := namespaceutil.IsNamespaceConditionSet(ns, ResourceQuotaValidatedCondition, value)
 	if set || err != nil {
@@ -385,11 +385,48 @@ func (c *SyncController) setValidated(ns *corev1.Namespace, value bool, msg stri
 	return c.Namespaces.Update(toUpdate)
 }
 
+func (c *SyncController) calculateRemainder(ns *v1.Namespace, namespaceDefault *v32.ResourceQuotaLimit) (string, error) {
+	totalProject, projectID, err := getProjectResourceQuotaLimit(ns, c.ProjectLister)
+	if err != nil {
+		return "", err
+	}
+	used, err := c.getUsedLimits(ns, projectID)
+	if err != nil {
+		return "", nil
+	}
+
+	totalProjectList, err := convertProjectResourceLimitToResourceList(totalProject)
+	if err != nil {
+		return "", nil
+	}
+	defaultList, err := convertProjectResourceLimitToResourceList(namespaceDefault)
+	if err != nil {
+		return "", nil
+	}
+
+	var available = totalProjectList.DeepCopy()
+	for _, u := range used {
+		list, _ := convertProjectResourceLimitToResourceList(u)
+		available = q.SubtractWithNonNegativeResult(available, list)
+	}
+	res := q.SubtractWithNonNegativeResult(available, defaultList)
+
+	const format = resource.Format("DecimalSI")
+	cpuLimit := fmt.Sprintf(`"limitsCpu":"%dm"`, res.Name("limits.cpu", format).MilliValue())
+	memoryLimit := fmt.Sprintf(`"limitsMemory":"%dMi"`, res.Name("limits.memory", format).MilliValue())
+
+	return fmt.Sprintf(`{"limit": {%s,%s}}`, cpuLimit, memoryLimit), nil
+}
+
 func (c *SyncController) getResourceQuotaToUpdate(ns *corev1.Namespace) (string, error) {
 	quota := getNamespaceResourceQuota(ns)
 	defaultQuota, err := getProjectNamespaceDefaultQuota(ns, c.ProjectLister)
 	if err != nil {
 		return "", err
+	}
+
+	if quota == "" && defaultQuota != nil {
+		return c.calculateRemainder(ns, &defaultQuota.Limit)
 	}
 
 	// rework after api framework change is done
