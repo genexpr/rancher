@@ -392,7 +392,7 @@ func formAzureRedirectURL(config map[string]interface{}) string {
 		// Extract the annotations from the map. This is needed because of the type structure of
 		// the Azure config and the Auth config it embeds. Full deserialization does not work for
 		// fields of the embedded Kubernetes types in this case.
-		ac.ObjectMeta.Annotations = extractAnnotations(config)
+		ac.ObjectMeta.Annotations = extractAnnotationsFromAuthConfig(config)
 		if !isConfigDeprecated(&ac) {
 			// Return the redirect URL for Microsoft Graph.
 			return fmt.Sprintf(
@@ -415,14 +415,23 @@ func formAzureRedirectURL(config map[string]interface{}) string {
 	)
 }
 
-func extractAnnotations(config map[string]interface{}) map[string]string {
-	annotations := make(map[string]string)
+// extractAnnotationsFromAuthConfig tries to extract the annotations from the AuthConfig value.
+// The AuthConfig value might come from either the database (on login attempts) or from the UI (on Azure AD setup attempts).
+// In these two cases, the structure of the config is different.
+// In the former, it's "metadata.annotations.[map of annotations]".
+// In the latter, it's "annotations.[map of annotations]". The function tries to find the annotations in either structure.
+func extractAnnotationsFromAuthConfig(config map[string]interface{}) map[string]string {
 	metadata, ok := config["metadata"].(map[string]interface{})
 	if !ok {
-		logrus.Info("Failed to decode the 'metadata' field of the auth config.")
-		return annotations
+		logrus.Info("Failed to decode the 'metadata' field of the auth config. Attempting to decode 'annotations' at the top level.")
+		return parseAnnotations(config)
 	}
-	rawAnnotations, ok := metadata["annotations"].(map[string]interface{})
+	return parseAnnotations(metadata)
+}
+
+func parseAnnotations(m map[string]interface{}) map[string]string {
+	annotations := make(map[string]string)
+	rawAnnotations, ok := m["annotations"].(map[string]interface{})
 	if !ok {
 		logrus.Info("Failed to decode the 'annotations' field of the auth config.")
 		return annotations
