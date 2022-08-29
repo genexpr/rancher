@@ -3,7 +3,9 @@ package clients
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -242,17 +244,62 @@ func (c AccessTokenCache) Replace(cache cache.Unmarshaler, key string) {
 	}
 }
 
-// Export persists the access token to the secret in the database.
+// Export persists the access token to the secret in the database. Before doing that, it validates the access token
+// to ensure it contains the necessary permissions, so as not to persist a token with wrong or insufficient permissions.
 func (c AccessTokenCache) Export(cache cache.Marshaler, key string) {
 	marshalled, err := cache.Marshal()
 	if err != nil {
 		logrus.Errorf("failed to marshal the access token before saving to the database: %v", err)
 		return
 	}
+
+	// This will fail once when the caching mechanism initially tries to find the value before Azure AD is fully set up.
+	token, err := extractAccessTokenFromSecret(marshalled)
+	if err != nil {
+		logrus.Errorf("failed to extract the Microsoft Graph access token for validation: %v", err)
+		return
+	}
+	if !msGraphTokenHasPermissions(token) {
+		logrus.Errorf("error validating the Microsoft Graph access token: %v", errMSGraphNoPermissions)
+		return
+	}
+
 	err = common.CreateOrUpdateSecrets(c.Secrets, string(marshalled), "access-token", "azuread")
 	if err != nil {
 		logrus.Errorf("failed to save the access token in the database: %v", err)
 	}
+}
+
+// extractAccessTokenFromSecret tries to find the JWT with access to the Microsoft Graph API in the JSON value stored
+// in a secret in the database.
+func extractAccessTokenFromSecret(secret []byte) (string, error) {
+	m := make(map[string]interface{})
+	if err := json.Unmarshal(secret, &m); err != nil {
+		return "", err
+	}
+	accessTokenValue, ok := m["AccessToken"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("failed to find the 'AccessToken' field on the Microsoft Graph access token")
+	}
+	err := errors.New("failed to find the 'secret' field in the 'AccessToken' on the Microsoft Graph access token")
+	// Get the first and only key. The key's name is built dynamically, so it's difficult to form it at runtime.
+	keys := reflect.ValueOf(accessTokenValue).MapKeys()
+	if len(keys) < 1 {
+		return "", err
+	}
+	keyName, ok := keys[0].Interface().(string)
+	if !ok {
+		return "", err
+	}
+	token, ok := accessTokenValue[keyName].(map[string]interface{})
+	if !ok {
+		return "", err
+	}
+	jwt, ok := token["secret"].(string)
+	if !ok {
+		return "", err
+	}
+	return jwt, nil
 }
 
 // NewMSGraphClient returns a client of the Microsoft Graph API. It attempts to get an access token to the API.
