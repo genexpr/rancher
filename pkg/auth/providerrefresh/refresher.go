@@ -278,11 +278,8 @@ func (r *refresher) refreshAttributes(attribs *v3.UserAttribute) (*v3.UserAttrib
 			} else {
 				token = *derivedTokens[providerName][0]
 			}
-			userPrincipal, err := providers.GetPrincipal(principalID, token)
-			if err != nil {
-				return nil, err
-			}
-			userExtraInfo := providers.GetUserExtraAttributes(providerName, userPrincipal)
+
+			userExtraInfo := providers.GetUserExtraAttributes(providerName, token.UserPrincipal)
 			if userExtraInfo != nil {
 				if attribs.ExtraByProvider == nil {
 					attribs.ExtraByProvider = make(map[string]map[string][]string)
