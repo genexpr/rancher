@@ -2,10 +2,12 @@ package podsecuritypolicy
 
 import (
 	"context"
+	"errors"
 
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	v1beta12 "github.com/rancher/rancher/pkg/generated/norman/policy/v1beta1"
 	"github.com/rancher/rancher/pkg/types/config"
+	"github.com/sirupsen/logrus"
 	"k8s.io/api/policy/v1beta1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,6 +18,8 @@ func RegisterPodSecurityPolicy(ctx context.Context, context *config.UserContext)
 	p := pspHandler{
 		psptLister:          context.Management.Management.PodSecurityPolicyTemplates("").Controller().Lister(),
 		podSecurityPolicies: context.Policy.PodSecurityPolicies(""),
+		clusterLister:       context.Management.Management.Clusters("").Controller().Lister(),
+		clusterName:         context.ClusterName,
 	}
 
 	context.Policy.PodSecurityPolicies("").AddHandler(ctx, "psp-sync", p.sync)
@@ -24,11 +28,17 @@ func RegisterPodSecurityPolicy(ctx context.Context, context *config.UserContext)
 type pspHandler struct {
 	psptLister          v3.PodSecurityPolicyTemplateLister
 	podSecurityPolicies v1beta12.PodSecurityPolicyInterface
+	clusterLister       v3.ClusterLister
+	clusterName         string
 }
 
 // sync checks if a psp has a parent pspt based on the annotation and if that parent no longer
 // exists will delete the psp
 func (p *pspHandler) sync(key string, obj *v1beta1.PodSecurityPolicy) (runtime.Object, error) {
+	if err := checkClusterVersion(p.clusterName, p.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
+		logrus.Errorf(clusterVersionCheckErrorString, err)
+		return obj, nil
+	}
 	if obj == nil || obj.DeletionTimestamp != nil {
 		return obj, nil
 	}

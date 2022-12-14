@@ -2,10 +2,12 @@ package podsecuritypolicy
 
 import (
 	"context"
+	"errors"
 
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	v12 "github.com/rancher/rancher/pkg/generated/norman/rbac.authorization.k8s.io/v1"
 	"github.com/rancher/rancher/pkg/types/config"
+	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/rbac/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,16 +16,20 @@ import (
 
 func RegisterClusterRole(ctx context.Context, context *config.UserContext) {
 	c := clusterRoleHandler{
-		psptLister:   context.Management.Management.PodSecurityPolicyTemplates("").Controller().Lister(),
-		clusterRoles: context.RBAC.ClusterRoles(""),
+		psptLister:    context.Management.Management.PodSecurityPolicyTemplates("").Controller().Lister(),
+		clusterRoles:  context.RBAC.ClusterRoles(""),
+		clusterLister: context.Management.Management.Clusters("").Controller().Lister(),
+		clusterName:   context.ClusterName,
 	}
 
 	context.RBAC.ClusterRoles("").AddHandler(ctx, "cluster-role-sync", c.sync)
 }
 
 type clusterRoleHandler struct {
-	psptLister   v3.PodSecurityPolicyTemplateLister
-	clusterRoles v12.ClusterRoleInterface
+	psptLister    v3.PodSecurityPolicyTemplateLister
+	clusterRoles  v12.ClusterRoleInterface
+	clusterLister v3.ClusterLister
+	clusterName   string
 }
 
 // sync checks if a clusterRole has a parent pspt based on the annotation and if that parent no longer
@@ -32,6 +38,12 @@ func (c *clusterRoleHandler) sync(key string, obj *v1.ClusterRole) (runtime.Obje
 	if obj == nil || obj.DeletionTimestamp != nil {
 		return obj, nil
 	}
+
+	if err := checkClusterVersion(c.clusterName, c.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
+		logrus.Errorf(clusterVersionCheckErrorString, err)
+		return obj, nil
+	}
+
 	if templateID, ok := obj.Annotations[podSecurityPolicyTemplateParentAnnotation]; ok {
 		_, err := c.psptLister.Get("", templateID)
 		if err != nil {
