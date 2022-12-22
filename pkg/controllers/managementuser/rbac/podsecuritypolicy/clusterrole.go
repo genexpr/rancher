@@ -39,9 +39,14 @@ func (c *clusterRoleHandler) sync(key string, obj *v1.ClusterRole) (runtime.Obje
 		return obj, nil
 	}
 
-	if err := checkClusterVersion(c.clusterName, c.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
+	logrus.Infof("[max] running a cluster role sync check %s", c.clusterName)
+	err := checkClusterVersion(c.clusterName, c.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
 	}
 
 	if templateID, ok := obj.Annotations[podSecurityPolicyTemplateParentAnnotation]; ok {

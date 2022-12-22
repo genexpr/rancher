@@ -42,9 +42,14 @@ func (m *namespaceManager) sync(key string, obj *v1.Namespace) (runtime.Object, 
 		return nil, nil
 	}
 
-	if err := checkClusterVersion(m.clusterName, m.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
+	logrus.Infof("[max] running a namespace sync check for cluster %s", m.clusterName)
+	err := checkClusterVersion(m.clusterName, m.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
 	}
 
 	return nil, resyncServiceAccounts(m.serviceAccountLister, m.serviceAccountsController, obj.Name)

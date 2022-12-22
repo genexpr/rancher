@@ -67,10 +67,14 @@ func (p *psptHandler) sync(key string, obj *v3.PodSecurityPolicyTemplate) (runti
 	if obj == nil {
 		return nil, nil
 	}
-
-	if err := checkClusterVersion(p.clusterName, p.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
+	logrus.Infof("[max] running a template sync check for cluster %s", p.clusterName)
+	err := checkClusterVersion(p.clusterName, p.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
 	}
 
 	if _, ok := obj.Annotations[podSecurityPolicyTemplateUpgrade]; !ok {

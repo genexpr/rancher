@@ -61,9 +61,15 @@ func (m *clusterManager) sync(key string, obj *v3.Cluster) (runtime.Object, erro
 		return nil, nil
 	}
 
-	if err := checkClusterVersion(m.clusterName, m.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
+	logrus.Infof("[max] running a cluster sync check for cluster %s", m.clusterName)
+
+	err := checkClusterVersion(m.clusterName, m.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
 	}
 
 	if obj.Spec.DefaultPodSecurityPolicyTemplateName != "" {

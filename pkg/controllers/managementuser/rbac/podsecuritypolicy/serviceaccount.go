@@ -118,9 +118,14 @@ func (m *serviceAccountManager) sync(key string, obj *v1.ServiceAccount) (runtim
 		return nil, nil
 	}
 
-	if err := checkClusterVersion(m.clusterName, m.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
+	logrus.Infof("[max] running a serviceaccount sync check for cluster %s", m.clusterName)
+	err := checkClusterVersion(m.clusterName, m.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
 	}
 
 	namespace, err := m.namespaceLister.Get("", obj.Namespace)

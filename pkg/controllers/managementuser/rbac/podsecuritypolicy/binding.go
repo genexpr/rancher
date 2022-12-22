@@ -94,13 +94,18 @@ func (l *lifecycle) sync(obj *v3.PodSecurityPolicyTemplateProjectBinding) (runti
 		return obj, nil
 	}
 
-	if err := checkClusterVersion(l.clusterName, l.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
+	logrus.Infof("[max] running a template binding sync check for cluster %s", l.clusterName)
+	err := checkClusterVersion(l.clusterName, l.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
 	}
 
 	podSecurityPolicyName := fmt.Sprintf("%v-psp", obj.PodSecurityPolicyTemplateName)
-	_, err := l.policyLister.Get("", podSecurityPolicyName)
+	_, err = l.policyLister.Get("", podSecurityPolicyName)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			_, err = l.createPolicy(obj, podSecurityPolicyName)

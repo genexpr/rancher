@@ -6,6 +6,7 @@ import (
 
 	mVersion "github.com/mcuadros/go-version"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
+	"github.com/sirupsen/logrus"
 )
 
 var errVersionIncompatible = errors.New("podsecuritypolicies are not available in Kubernetes v1.25 and above")
@@ -24,5 +25,6 @@ func checkClusterVersion(clusterName string, clusterLister v3.ClusterLister) err
 	if mVersion.Compare(cluster.Status.Version.String(), "v1.25", ">=") {
 		return errVersionIncompatible
 	}
+	logrus.Infof("[max] no error checking compatibility for cluster [%s]-%s", clusterName, cluster.Status.Version.String())
 	return nil
 }

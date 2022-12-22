@@ -15,16 +15,17 @@ import (
 func Register(ctx context.Context, userContext *config.UserContext) {
 	starter := userContext.DeferredStart(ctx, func(ctx context.Context) error {
 		clusterName := userContext.ClusterName
-		logrus.Infof("Checking cluster [%s] compatibility before registering podsecuritypolicy controllers.", clusterName)
+		logrus.Infof("[max] Checking cluster [%s] compatibility before registering podsecuritypolicy controllers.", clusterName)
 		clusterLister := userContext.Management.Management.Clusters("").Controller().Lister()
 		err := checkClusterVersion(clusterName, clusterLister)
 		if err != nil {
 			if errors.Is(err, errVersionIncompatible) {
-				logrus.Errorf("%v - will not register podsecuritypolicy controllers for cluster [%s].", err, clusterName)
+				logrus.Errorf("[max] %v - will not register podsecuritypolicy controllers for cluster [%s].", err, clusterName)
 				return nil
 			}
 			return err
 		}
+		logrus.Infof("[max] cluster [%s] compatibility succeeded.", clusterName)
 		registerDeferred(ctx, userContext)
 		return nil
 	})

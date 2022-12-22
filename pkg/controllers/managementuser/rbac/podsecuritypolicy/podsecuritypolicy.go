@@ -35,13 +35,20 @@ type pspHandler struct {
 // sync checks if a psp has a parent pspt based on the annotation and if that parent no longer
 // exists will delete the psp
 func (p *pspHandler) sync(key string, obj *v1beta1.PodSecurityPolicy) (runtime.Object, error) {
-	if err := checkClusterVersion(p.clusterName, p.clusterLister); err != nil && !errors.Is(err, errVersionIncompatible) {
-		logrus.Errorf(clusterVersionCheckErrorString, err)
-		return obj, nil
-	}
 	if obj == nil || obj.DeletionTimestamp != nil {
 		return obj, nil
 	}
+
+	logrus.Infof("[max] running a podsecuritypolicy sync check for cluster %s", p.clusterName)
+	err := checkClusterVersion(p.clusterName, p.clusterLister)
+	if err != nil {
+		if errors.Is(err, errVersionIncompatible) {
+			logrus.Errorf(clusterVersionCheckErrorString, err)
+			return obj, nil
+		}
+		return obj, err
+	}
+
 	if templateID, ok := obj.Annotations[podSecurityPolicyTemplateParentAnnotation]; ok {
 		_, err := p.psptLister.Get("", templateID)
 		if err != nil {
