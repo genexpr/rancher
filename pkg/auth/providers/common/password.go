@@ -65,7 +65,7 @@ func ReadFromSecretData(secrets corev1.SecretInterface, secretInfo string) (map[
 	if strings.HasPrefix(secretInfo, SecretsNamespace) {
 		split := strings.SplitN(secretInfo, ":", 2)
 		if len(split) == 2 {
-			secret, err := secrets.GetNamespaced(split[0], split[1], metav1.GetOptions{})
+			secret, err := secrets.Controller().Lister().Get(split[0], split[1])
 			if err != nil {
 				return nil, fmt.Errorf("error getting secret %s %v", secretInfo, err)
 			}
