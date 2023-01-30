@@ -3,12 +3,13 @@ package auth
 import (
 	"context"
 
+	"github.com/rancher/norman/objectclient"
 	"github.com/rancher/rancher/pkg/auth/cleanup"
 	"github.com/rancher/rancher/pkg/auth/providerrefresh"
-	controllers "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/sirupsen/logrus"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -33,29 +34,46 @@ type CleanupService interface {
 }
 
 type authConfigController struct {
-	users            v3.UserLister
-	authRefresher    providerrefresh.UserAuthRefresher
-	cleanup          CleanupService
-	authConfigClient controllers.AuthConfigClient
+	users         v3.UserLister
+	authRefresher providerrefresh.UserAuthRefresher
+	cleanup       CleanupService
+	authConfigs   objectclient.GenericClient
 }
 
 func newAuthConfigController(context context.Context, mgmt *config.ManagementContext, scaledContext *config.ScaledContext) *authConfigController {
 	controller := &authConfigController{
-		users:            mgmt.Management.Users("").Controller().Lister(),
-		authRefresher:    providerrefresh.NewUserAuthRefresher(context, scaledContext),
-		cleanup:          cleanup.NewCleanupService(mgmt.Core.Secrets(""), mgmt.Wrangler.Mgmt),
-		authConfigClient: mgmt.Wrangler.Mgmt.AuthConfig(),
+		users:         mgmt.Management.Users("").Controller().Lister(),
+		authRefresher: providerrefresh.NewUserAuthRefresher(context, scaledContext),
+		cleanup:       cleanup.NewCleanupService(mgmt.Core.Secrets(""), mgmt.Wrangler.Mgmt),
+		authConfigs:   scaledContext.Management.AuthConfigs("").ObjectClient().UnstructuredClient(),
 	}
 	return controller
 }
 
 func (ac *authConfigController) setCleanupAnnotation(obj *v3.AuthConfig, value string) (runtime.Object, error) {
-	if obj.Annotations == nil {
-		obj.Annotations = make(map[string]string)
+	name := obj.Name
+	o, err := ac.authConfigs.Get(name, v1.GetOptions{})
+	if err != nil {
+		return nil, err
 	}
-	objCopy := obj.DeepCopy()
-	objCopy.Annotations[CleanupAnnotation] = value
-	return ac.authConfigClient.Update(objCopy)
+	u, ok := o.(runtime.Unstructured)
+	if !ok {
+		logrus.Errorf("auth config %s is not an unstructured value", name)
+		return nil, nil
+	}
+	authConfig := u.UnstructuredContent()
+	metadata, ok := authConfig["metadata"].(map[string]any)
+	if !ok {
+		logrus.Errorf("auth config %s does not have the 'metadata' field", name)
+		return nil, nil
+	}
+	annotations, ok := metadata["annotations"].(map[string]any)
+	if !ok {
+		annotations = make(map[string]any)
+	}
+	annotations[CleanupAnnotation] = value
+	u.SetUnstructuredContent(authConfig)
+	return ac.authConfigs.Update(name, o)
 }
 
 func (ac *authConfigController) sync(key string, obj *v3.AuthConfig) (runtime.Object, error) {
