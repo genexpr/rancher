@@ -1,15 +1,18 @@
 package secretmigrator
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/mitchellh/mapstructure"
+	"github.com/rancher/norman/condition"
 	"github.com/rancher/norman/objectclient"
-	client "github.com/rancher/rancher/pkg/client/generated/management/v3"
-
 	apimgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
+	client "github.com/rancher/rancher/pkg/client/generated/management/v3"
 	"github.com/rancher/rancher/pkg/namespace"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -26,8 +29,16 @@ func (h *handler) syncAuthConfig(_ string, authConfig *apimgmtv3.AuthConfig) (ru
 	}
 
 	if authConfig.Type != client.ShibbolethConfigType {
-		apimgmtv3.AuthConfigConditionSecretsMigrated.SetStatus(authConfig, "True")
-		updated, err := h.authConfigs.Update(authConfig.Name, authConfig)
+		unstructuredConfig, err := getUnstructuredAuthConfig(h.authConfigs, authConfig)
+		if err != nil {
+			return nil, err
+		}
+		newUnstructuredConfig, err := setUnstructuredStatus(unstructuredConfig, apimgmtv3.AuthConfigConditionSecretsMigrated, "True")
+		if err != nil {
+			return nil, fmt.Errorf("failed to set the status on unstructured AuthConfig %s: %w", authConfig.Name, err)
+		}
+
+		updated, err := h.authConfigs.Update(authConfig.Name, newUnstructuredConfig)
 		if err != nil {
 			return nil, fmt.Errorf("unable to update migration status of authconfig: %w", err)
 		}
@@ -40,7 +51,7 @@ func (h *handler) syncAuthConfig(_ string, authConfig *apimgmtv3.AuthConfig) (ru
 			return nil, err
 		}
 
-		return h.migrateShibbolethSecrets(unstructuredConfig)
+		return h.migrateShibbolethSecrets(unstructuredConfig.UnstructuredContent())
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update status for AuthConfig %s: %w", authConfig.Name, err)
@@ -54,7 +65,7 @@ func (h *handler) syncAuthConfig(_ string, authConfig *apimgmtv3.AuthConfig) (ru
 }
 
 // getUnstructuredAuthConfig attempts to get the unstructured AuthConfig for the AuthConfig that is passed in.
-func getUnstructuredAuthConfig(unstructuredClient objectclient.GenericClient, authConfig *apimgmtv3.AuthConfig) (map[string]any, error) {
+func getUnstructuredAuthConfig(unstructuredClient objectclient.GenericClient, authConfig *apimgmtv3.AuthConfig) (runtime.Unstructured, error) {
 	unstructuredAuthConfig, err := unstructuredClient.Get(authConfig.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve unstructured data for AuthConfig from cluster: %w", err)
@@ -64,9 +75,7 @@ func getUnstructuredAuthConfig(unstructuredClient objectclient.GenericClient, au
 	if !ok {
 		return nil, fmt.Errorf("failed to read unstructured data for AuthConfig")
 	}
-
-	unstructuredConfig := unstructured.UnstructuredContent()
-	return unstructuredConfig, nil
+	return unstructured, nil
 }
 
 // migrateShibbolethSecrets effects the migration of secrets for the Shibboleth provider.
@@ -107,4 +116,43 @@ func (h *handler) migrateShibbolethSecrets(unstructuredConfig map[string]any) (r
 	shibbConfig.OpenLdapConfig.ServiceAccountPassword = fullSecretName
 
 	return shibbConfig, nil
+}
+
+func setUnstructuredStatus(unstructured runtime.Unstructured, key condition.Cond, value corev1.ConditionStatus) (runtime.Unstructured, error) {
+	content := unstructured.UnstructuredContent()
+	status, ok := content["status"].(map[string]any)
+	if !ok {
+		status = map[string]any{}
+	}
+
+	var authConfigStatus apimgmtv3.AuthConfigStatus
+	if err := mapstructure.Decode(status, &authConfigStatus); err != nil {
+		return nil, err
+	}
+	var found bool
+	for _, cond := range authConfigStatus.Conditions {
+		if cond.Type == key {
+			cond.Status = value
+			found = true
+			break
+		}
+	}
+	if !found {
+		authConfigStatus.Conditions = append(authConfigStatus.Conditions, apimgmtv3.AuthConfigConditions{
+			Type:   key,
+			Status: value,
+		})
+	}
+	newBytes, err := json.Marshal(authConfigStatus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-marshal auth config status to bytes %w", err)
+	}
+	var newContent map[string]any
+	if err := json.Unmarshal(newBytes, &newContent); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal auth config status as bytes to map %w", err)
+	}
+	content["status"] = newContent
+
+	unstructured.SetUnstructuredContent(content)
+	return unstructured, nil
 }

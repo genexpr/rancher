@@ -2,15 +2,13 @@ package secretmigrator
 
 import (
 	"fmt"
-	"github.com/rancher/norman/objectclient"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/watch"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/rancher/norman/objectclient"
 	apimgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/providers/saml"
 	corefakes "github.com/rancher/rancher/pkg/generated/norman/core/v1/fakes"
@@ -20,14 +18,152 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 )
 
 const (
 	mockPass                = "testpass1234"
 	testCreationStampString = "2023-05-15T19:28:22Z"
 )
+
+func TestSetUnstructuredStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  unstructuredConfig
+		output unstructuredConfig
+	}{
+		{
+			name: "config with no status",
+			input: unstructuredConfig{
+				values: map[string]any{
+					"foo": "bar",
+				},
+			},
+			output: unstructuredConfig{
+				values: map[string]any{
+					"foo": "bar",
+					"status": map[string]any{
+						"conditions": []any{
+							map[string]any{
+								"status": "True",
+								"type":   "SecretsMigrated",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "config has a status with no conditions",
+			input: unstructuredConfig{
+				values: map[string]any{
+					"foo":    "bar",
+					"status": map[string]any{},
+				},
+			},
+			output: unstructuredConfig{
+				values: map[string]any{
+					"foo": "bar",
+					"status": map[string]any{
+						"conditions": []any{
+							map[string]any{
+								"status": "True",
+								"type":   "SecretsMigrated",
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "config has a status with no matching conditions",
+			input: unstructuredConfig{
+				values: map[string]any{
+					"foo": "bar",
+					"status": map[string]any{
+						"conditions": []any{
+							map[string]any{
+								"status": "Foo",
+								"type":   "Something",
+							},
+						},
+					},
+				},
+			},
+			output: unstructuredConfig{
+				values: map[string]any{
+					"foo": "bar",
+					"status": map[string]any{
+						"conditions": []any{
+							map[string]any{
+								"status": "Foo",
+								"type":   "Something",
+							},
+							map[string]any{
+								"status": "True",
+								"type":   "SecretsMigrated",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	const cond = apimgmtv3.AuthConfigConditionSecretsMigrated
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := setUnstructuredStatus(&test.input, cond, "True")
+			if err != nil {
+				t.Fatalf("got an unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, &test.output) {
+				t.Errorf("expected %+v, got %+v", test.output, got)
+			}
+		})
+	}
+
+}
+
+type unstructuredConfig struct {
+	values map[string]any
+}
+
+func (c *unstructuredConfig) UnstructuredContent() map[string]interface{} {
+	return c.values
+}
+
+func (c *unstructuredConfig) SetUnstructuredContent(m map[string]interface{}) {
+	c.values = m
+}
+
+func (c *unstructuredConfig) GetObjectKind() schema.ObjectKind {
+	panic("implement me")
+}
+
+func (c *unstructuredConfig) DeepCopyObject() runtime.Object {
+	panic("implement me")
+}
+
+func (c *unstructuredConfig) NewEmptyInstance() runtime.Unstructured {
+	panic("implement me")
+}
+
+func (c *unstructuredConfig) IsList() bool {
+	panic("implement me")
+}
+
+func (c *unstructuredConfig) EachListItem(f func(runtime.Object) error) error {
+	panic("implement me")
+}
 
 func TestShibbolethAuthConfigMigration(t *testing.T) {
 	errorCreateSecret := fmt.Errorf("failed to create secret")
