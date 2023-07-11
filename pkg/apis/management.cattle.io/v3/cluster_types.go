@@ -128,6 +128,12 @@ type ClusterSpecBase struct {
 	ClusterSecrets                                       ClusterSecrets                          `json:"clusterSecrets" norman:"nocreate,noupdate"`
 	ClusterAgentDeploymentCustomization                  *AgentDeploymentCustomization           `json:"clusterAgentDeploymentCustomization,omitempty"`
 	FleetAgentDeploymentCustomization                    *AgentDeploymentCustomization           `json:"fleetAgentDeploymentCustomization,omitempty"`
+
+	// ChartValues holds optional helm values for customizing charts installed by this cluster.
+	// Keys represent the name of the chart and values must be valid yaml More info:
+	// https://helm.sh/docs/chart_template_guide/values_files/
+	// +optional
+	ChartValues map[string]string `json:"chartValues,omitempty"`
 }
 
 type AgentDeploymentCustomization struct {

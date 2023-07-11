@@ -20,7 +20,6 @@ import (
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apierror "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -139,7 +138,7 @@ func (h handler) onClusterChange(key string, cluster *v3.Cluster) (*v3.Cluster, 
 	}
 	// add priority class value
 	if priorityClassName, err := h.chartsConfig.GetPriorityClassName(); err != nil {
-		if !apierror.IsNotFound(err) {
+		if !chart.IsNotFoundError(err) {
 			logrus.Warnf("Failed to get rancher priorityClassName for %q: %v", toInstallChart.ChartName, err)
 		}
 	} else {

@@ -11,12 +11,11 @@ import (
 	"github.com/rancher/wrangler/pkg/generic/fake"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
+	apierror "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-var (
-	errUnimplemented = fmt.Errorf("unimplemented")
-	errNotFound      = fmt.Errorf("not found")
-)
+var errTest = fmt.Errorf("test error")
 
 const priorityClassName = "rancher-critical"
 
@@ -73,6 +72,93 @@ func TestGetPriorityClassNameFromRancherConfigMap(t *testing.T) {
 			}
 			assert.NoError(t, err, "failed to get priority class.")
 			assert.Equal(t, tt.want, got, "Unexpected priorityClassName returned")
+		})
+	}
+}
+
+func TestGetWebhookValue(t *testing.T) {
+	const yamlInfo = "yamlKey: yamlValue"
+	const invalidYaml = "%{'foo':'bar "
+
+	tests := []*struct {
+		name     string
+		want     map[string]any
+		wantErr  bool
+		notFound bool
+		setup    func(*fake.MockCacheInterface[*v1.ConfigMap])
+	}{
+		{
+			name: "correctly get webhook values",
+			want: map[string]any{"yamlKey": "yamlValue"},
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(&v1.ConfigMap{Data: map[string]string{chart.WebhookChartName: yamlInfo}}, nil)
+			},
+		},
+
+		{
+			name:    "webhook values are invalid yaml",
+			wantErr: true,
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(&v1.ConfigMap{Data: map[string]string{chart.WebhookChartName: invalidYaml}}, nil)
+			},
+		},
+		{
+			name:     "value not in map",
+			wantErr:  true,
+			notFound: true,
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(&v1.ConfigMap{Data: map[string]string{}}, nil)
+			},
+		},
+		{
+			name:     "map is nil",
+			wantErr:  true,
+			notFound: true,
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(&v1.ConfigMap{Data: nil}, nil)
+			},
+		},
+		{
+			name:     "rancher config does not exist",
+			wantErr:  true,
+			notFound: true,
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(nil, apierror.NewNotFound(schema.GroupResource{}, chart.CustomValueMapName))
+			},
+		},
+		{
+			name:     "rancher config get failed",
+			wantErr:  true,
+			notFound: false,
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(nil, errTest)
+			},
+		},
+		{
+			name: "webhook value does not used deprecated configMap setting",
+			want: map[string]any{"yamlKey": "yamlValue"},
+			setup: func(configCache *fake.MockCacheInterface[*v1.ConfigMap]) {
+				settings.ConfigMapName.Set("unknown-config-name")
+				configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(&v1.ConfigMap{Data: map[string]string{chart.WebhookChartName: yamlInfo}}, nil)
+			},
+		},
+	}
+	for _, tt := range tests {
+		test := tt
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			configCache := fake.NewMockCacheInterface[*v1.ConfigMap](ctrl)
+			test.setup(configCache)
+			getter := chart.RancherConfigGetter{configCache}
+			got, err := getter.GetWebhookValues()
+			if test.wantErr {
+				assert.Equal(t, test.notFound, chart.IsNotFoundError(err))
+				assert.Error(t, err, "Expected test to error.")
+				return
+			}
+			assert.NoError(t, err, "failed to get priority class.")
+			assert.Equal(t, test.want, got, "Unexpected priorityClassName returned")
 		})
 	}
 }

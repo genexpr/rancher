@@ -17,13 +17,52 @@ import (
 )
 
 var (
-	errUnimplemented  = fmt.Errorf("unimplemented")
-	errNotFound       = fmt.Errorf("not found")
+	errTest           = fmt.Errorf("test error")
 	priorityClassName = "rancher-critical"
 	operatorNamespace = "rancher-operator-system"
+	priorityConfig    = &v1.ConfigMap{
+		Data: map[string]string{
+			"priorityClassName": priorityClassName,
+		},
+	}
+	fullConfig = &v1.ConfigMap{
+		Data: map[string]string{
+			"priorityClassName":    priorityClassName,
+			chart.WebhookChartName: testYAML,
+		},
+	}
+	invalidConfig = &v1.ConfigMap{
+		Data: map[string]string{
+			chart.WebhookChartName: "--- %{}---\n:",
+		},
+	}
+	emptyConfig        = &v1.ConfigMap{}
+	originalMinVersion = settings.RancherWebhookMinVersion.Get()
+	originalVersion    = settings.RancherWebhookVersion.Get()
 )
 
-// Test_ChartInstallation test that all expected charts are installed or uninstalled with expected configuration
+var testYAML = `---
+newKey: newValue
+mcm:
+  enabled: false
+global: ""
+`
+
+type testMocks struct {
+	manager       *chartfake.MockManager
+	namespaceCtrl *fake.MockNonNamespacedControllerInterface[*v1.Namespace, *v1.NamespaceList]
+	configCache   *fake.MockCacheInterface[*v1.ConfigMap]
+}
+
+func (t *testMocks) Handler() *handler {
+	return &handler{
+		manager:      t.manager,
+		namespaces:   t.namespaceCtrl,
+		chartsConfig: chart.RancherConfigGetter{ConfigCache: t.configCache},
+	}
+}
+
+// Test_ChartInstallation test that all expected charts are installed or uninstalled with expected configuration.
 func Test_ChartInstallation(t *testing.T) {
 	repo := &catalog.ClusterRepo{
 		ObjectMeta: metav1.ObjectMeta{
@@ -33,16 +72,16 @@ func Test_ChartInstallation(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		setup            func(*gomock.Controller) chart.Manager
+		setup            func(testMocks)
 		registryOverride string
 		wantErr          bool
 	}{
 		{
 			name: "normal installation",
-			setup: func(ctrl *gomock.Controller) chart.Manager {
-				settings.ConfigMapName.Set("pass")
+			setup: func(mocks testMocks) {
+				mocks.namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
+				mocks.configCache.EXPECT().Get(namespace.System, chart.CustomValueMapName).Return(priorityConfig, nil).Times(2)
 				settings.RancherWebhookVersion.Set("2.0.0")
-				manager := chartfake.NewMockManager(ctrl)
 				expectedValues := map[string]interface{}{
 					"priorityClassName": priorityClassName,
 					"capi": map[string]interface{}{
@@ -57,27 +96,25 @@ func Test_ChartInstallation(t *testing.T) {
 						},
 					},
 				}
-				var b bool
-				manager.EXPECT().Ensure(
+				mocks.manager.EXPECT().Ensure(
 					namespace.System,
 					"rancher-webhook",
 					"",
 					"2.0.0",
 					expectedValues,
-					gomock.AssignableToTypeOf(b),
+					gomock.AssignableToTypeOf(false),
 					"",
 				).Return(nil)
 
-				manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
-				return manager
+				mocks.manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
 			},
 		},
 		{
 			name: "installation without webhook priority class",
-			setup: func(ctrl *gomock.Controller) chart.Manager {
-				settings.ConfigMapName.Set("fail")
+			setup: func(mocks testMocks) {
+				mocks.namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
+				mocks.configCache.EXPECT().Get(gomock.Any(), chart.CustomValueMapName).Return(nil, errTest).Times(2)
 				settings.RancherWebhookVersion.Set("2.0.0")
-				manager := chartfake.NewMockManager(ctrl)
 				expectedValues := map[string]interface{}{
 					"capi": map[string]interface{}{
 						"enabled": features.EmbeddedClusterAPI.Enabled(),
@@ -91,28 +128,25 @@ func Test_ChartInstallation(t *testing.T) {
 						},
 					},
 				}
-				var b bool
-				manager.EXPECT().Ensure(
+				mocks.manager.EXPECT().Ensure(
 					namespace.System,
 					"rancher-webhook",
 					"",
 					"2.0.0",
 					expectedValues,
-					gomock.AssignableToTypeOf(b),
+					gomock.AssignableToTypeOf(false),
 					"",
 				).Return(nil)
 
-				manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
-				return manager
-
+				mocks.manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
 			},
 		},
 		{
 			name: "installation with image override",
-			setup: func(ctrl *gomock.Controller) chart.Manager {
-				settings.ConfigMapName.Set("fail")
+			setup: func(mocks testMocks) {
+				mocks.namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
+				mocks.configCache.EXPECT().Get(gomock.Any(), chart.CustomValueMapName).Return(emptyConfig, nil).Times(2)
 				settings.RancherWebhookVersion.Set("2.0.1")
-				manager := chartfake.NewMockManager(ctrl)
 				expectedValues := map[string]interface{}{
 					"capi": map[string]interface{}{
 						"enabled": features.EmbeddedClusterAPI.Enabled(),
@@ -129,29 +163,27 @@ func Test_ChartInstallation(t *testing.T) {
 						"repository": "rancher-test.io/rancher/rancher-webhook",
 					},
 				}
-				var b bool
-				manager.EXPECT().Ensure(
+				mocks.manager.EXPECT().Ensure(
 					namespace.System,
 					"rancher-webhook",
 					"",
 					"2.0.1",
 					expectedValues,
-					gomock.AssignableToTypeOf(b),
+					gomock.AssignableToTypeOf(false),
 					"rancher-test.io/"+settings.ShellImage.Get(),
 				).Return(nil)
 
-				manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
-				return manager
+				mocks.manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
 			},
 			registryOverride: "rancher-test.io",
 		},
 		{
 			name: "installation with min version override",
-			setup: func(ctrl *gomock.Controller) chart.Manager {
-				settings.ConfigMapName.Set("fail")
+			setup: func(mocks testMocks) {
+				mocks.namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
+				mocks.configCache.EXPECT().Get(gomock.Any(), chart.CustomValueMapName).Return(emptyConfig, nil).Times(2)
 				settings.RancherWebhookMinVersion.Set("2.0.1")
 				settings.RancherWebhookVersion.Set("2.0.4")
-				manager := chartfake.NewMockManager(ctrl)
 				expectedValues := map[string]interface{}{
 					"capi": map[string]interface{}{
 						"enabled": features.EmbeddedClusterAPI.Enabled(),
@@ -168,36 +200,102 @@ func Test_ChartInstallation(t *testing.T) {
 						"repository": "rancher-test.io/rancher/rancher-webhook",
 					},
 				}
-				var b bool
-				manager.EXPECT().Ensure(
+				mocks.manager.EXPECT().Ensure(
 					namespace.System,
 					"rancher-webhook",
 					"2.0.1",
 					"",
 					expectedValues,
-					gomock.AssignableToTypeOf(b),
+					gomock.AssignableToTypeOf(false),
 					"rancher-test.io/"+settings.ShellImage.Get(),
 				).Return(nil)
 
-				manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
-				return manager
+				mocks.manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
 			},
 			registryOverride: "rancher-test.io",
+		},
+		{
+			name: "installation with webhook values",
+			setup: func(mocks testMocks) {
+				mocks.namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
+				mocks.configCache.EXPECT().Get(gomock.Any(), chart.CustomValueMapName).Return(fullConfig, nil).Times(2)
+				settings.RancherWebhookVersion.Set("2.0.0")
+				expectedValues := map[string]interface{}{
+					"priorityClassName": priorityClassName,
+					"capi": map[string]interface{}{
+						"enabled": features.EmbeddedClusterAPI.Enabled(),
+					},
+					"mcm": map[any]interface{}{
+						"enabled": false,
+					},
+					"global": "",
+					"newKey": "newValue",
+				}
+				mocks.manager.EXPECT().Ensure(
+					namespace.System,
+					"rancher-webhook",
+					"",
+					"2.0.0",
+					expectedValues,
+					gomock.AssignableToTypeOf(false),
+					"",
+				).Return(nil)
+
+				mocks.manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
+			},
+		},
+		{
+			name: "installation with invalid webhook values",
+			setup: func(mocks testMocks) {
+				mocks.namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
+				mocks.configCache.EXPECT().Get(gomock.Any(), chart.CustomValueMapName).Return(invalidConfig, nil).Times(2)
+				settings.RancherWebhookVersion.Set("2.0.0")
+				expectedValues := map[string]interface{}{
+					"capi": map[string]interface{}{
+						"enabled": features.EmbeddedClusterAPI.Enabled(),
+					},
+					"mcm": map[string]interface{}{
+						"enabled": features.MCM.Enabled(),
+					},
+					"global": map[string]interface{}{
+						"cattle": map[string]interface{}{
+							"systemDefaultRegistry": settings.SystemDefaultRegistry.Get(),
+						},
+					},
+				}
+				mocks.manager.EXPECT().Ensure(
+					namespace.System,
+					"rancher-webhook",
+					"",
+					"2.0.0",
+					expectedValues,
+					gomock.AssignableToTypeOf(false),
+					"",
+				).Return(nil)
+
+				mocks.manager.EXPECT().Uninstall(operatorNamespace, "rancher-operator").Return(nil)
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// reset setting to default values before each test
+			settings.RancherWebhookMinVersion.Set(originalMinVersion)
+			settings.RancherWebhookVersion.Set(originalVersion)
 			ctrl := gomock.NewController(t)
-			namespaceCtrl := fake.NewMockNonNamespacedControllerInterface[*v1.Namespace, *v1.NamespaceList](ctrl)
-			namespaceCtrl.EXPECT().Delete(operatorNamespace, nil).Return(nil)
-			configCache := fake.NewMockCacheInterface[*v1.ConfigMap](ctrl)
-			configCache.EXPECT().Get(gomock.Any(), "pass").Return(&v1.ConfigMap{Data: map[string]string{"priorityClassName": priorityClassName}}, nil).AnyTimes()
-			configCache.EXPECT().Get(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("not found")).AnyTimes()
-			h := &handler{
-				chartsConfig: chart.RancherConfigGetter{ConfigCache: configCache},
+
+			// create mocks for each test
+			mocks := testMocks{
+				manager:       chartfake.NewMockManager(ctrl),
+				namespaceCtrl: fake.NewMockNonNamespacedControllerInterface[*v1.Namespace, *v1.NamespaceList](ctrl),
+				configCache:   fake.NewMockCacheInterface[*v1.ConfigMap](ctrl),
 			}
-			h.manager = tt.setup(ctrl)
-			h.namespaces = namespaceCtrl
+
+			// allow test to add expected calls to mocks and run any additional setup
+			tt.setup(mocks)
+			h := mocks.Handler()
+
+			// add any registryOverrides
 			h.registryOverride = tt.registryOverride
 			_, err := h.onRepo("", repo)
 			if (err != nil) != tt.wantErr {
