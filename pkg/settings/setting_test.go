@@ -9,6 +9,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestFullShellImage(t *testing.T) {
+	originalShellImage := ShellImage.Get()
+	originalDefaultRegistry := SystemDefaultRegistry.Get()
+
+	ShellImage.Set("image")
+	SystemDefaultRegistry.Set("")
+	assert.Equal(t, "image", FullShellImage())
+	SystemDefaultRegistry.Set("prefix")
+	assert.Equal(t, "prefix/image", FullShellImage())
+
+	// Reset the settings for other tests
+	ShellImage.Set(originalShellImage)
+	SystemDefaultRegistry.Set(originalDefaultRegistry)
+}
+
 func TestIsRelease(t *testing.T) {
 	inputs := map[string]bool{
 		"dev":         false,
@@ -75,4 +90,37 @@ func TestSystemFeatureChartRefreshSecondsDefault(t *testing.T) {
 		t.Errorf("The System Feature Chart Refresh Seconds of %q is not the expected value %q", got, expect)
 	}
 
+}
+
+func TestGetInt(t *testing.T) {
+	fakeIntSettting := NewSetting("int", "1")
+	fakeStringSetting := NewSetting("string", "one")
+
+	fakeIntSettting.Set("2")
+	assert.Equal(t, 2, fakeIntSettting.GetInt())
+
+	fakeIntSettting.Set("two")
+	assert.Equal(t, 1, fakeIntSettting.GetInt())
+
+	fakeStringSetting.Set("2")
+	assert.Equal(t, 2, fakeStringSetting.GetInt())
+
+	fakeStringSetting.Set("two")
+	assert.Equal(t, 0, fakeStringSetting.GetInt())
+}
+
+func TestGetRancherVersion(t *testing.T) {
+	inputs := map[string]string{
+		"dev-version":    RancherVersionDev,
+		"master-version": RancherVersionDev,
+		"version-head":   RancherVersionDev,
+		"v2.7.X":         "2.7.X",
+		"2.7.X":          "2.7.X",
+	}
+
+	for key, value := range inputs {
+		ServerVersion.Set(key)
+		result := GetRancherVersion()
+		assert.Equal(t, value, result)
+	}
 }
