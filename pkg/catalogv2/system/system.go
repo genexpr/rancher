@@ -3,7 +3,6 @@ package system
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	jsonpatch "github.com/evanphx/json-patch"
+	json "github.com/json-iterator/go"
 	"github.com/rancher/rancher/pkg/api/steve/catalog/types"
 	catalog "github.com/rancher/rancher/pkg/apis/catalog.cattle.io/v1"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"

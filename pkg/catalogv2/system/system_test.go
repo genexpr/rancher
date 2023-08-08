@@ -246,6 +246,25 @@ func TestIsInstalled(t *testing.T) {
 			},
 			expectedErr: false,
 		},
+		{
+			name:          "values has nested map",
+			latestVersion: "1.3.0",
+			minVersion:    "1.2.0",
+			desiredValues: map[string]any{
+				"address": map[any]any{
+					"street": "123 Cherry St.",
+				},
+			},
+			expectedInstalled: false,
+			expectedVersion:   "1.3.0",
+			expectedValues: map[string]any{
+				"name": "Pablo",
+				"address": map[string]any{
+					"street": "123 Cherry St.",
+				},
+			},
+			expectedErr: false,
+		},
 	}
 
 	releases := []*release.Release{
@@ -269,7 +288,11 @@ func TestIsInstalled(t *testing.T) {
 			assert.Equal(t, test.expectedInstalled, installed)
 			assert.Equal(t, test.expectedVersion, version)
 			assert.Equal(t, test.expectedValues, values)
-			assert.Equal(t, test.expectedErr, err != nil)
+			if test.expectedErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
