@@ -7,7 +7,7 @@ import (
 	apimgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	mgmtv3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3/fakes"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/version"
 )
 
@@ -30,26 +30,29 @@ func newClusterListerWithVersion(kubernetesVersion string) *fakes.ClusterListerM
 }
 
 func TestCheckClusterVersion(t *testing.T) {
-
+	t.Parallel()
 	tests := []*struct {
 		version string
 		wantErr bool
 		setup   func()
 	}{
-		// tests for version string size
+		// tests for version string size in characters
 		{
 			version: "",
 			wantErr: true,
 		},
 		{
-			version: "v1.24",
-			wantErr: false,
+			version: "⌘⌘⌘",
+			wantErr: true,
 		},
 		{
 			version: "v1.2",
 			wantErr: true,
 		},
-		// rke1 version strings
+		{
+			version: "v1.24",
+			wantErr: true,
+		},
 		{
 			version: "v1.24.9",
 			wantErr: false,
@@ -90,16 +93,24 @@ func TestCheckClusterVersion(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.version, func(t *testing.T) {
+			t.Parallel()
 			clusterLister := newClusterListerWithVersion(tt.version)
-			println(tt.version)
 			err := checkClusterVersion("test", clusterLister)
 			if tt.wantErr {
-				println(err.Error())
-				assert.Error(t, err, "Expected checkClusterVersion to raise error.")
-				return
+				require.Error(t, err)
+			}
+			if !tt.wantErr {
+				require.NoError(t, err)
 			}
 		})
 	}
 
+	t.Run("version check fails when it can't get cluster", func(t *testing.T) {
+		t.Parallel()
+		clusterLister := newClusterListerWithVersion("bad")
+		err := checkClusterVersion("test", clusterLister)
+		require.Error(t, err)
+	})
 }
